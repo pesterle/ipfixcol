@@ -18,7 +18,6 @@ AC_CONFIG_SUBDIRS([ base
 	plugins/storage/statistics
 	plugins/storage/nfdump
 	plugins/input/nfdump
-	plugins/input/udp_cpg
 	plugins/intermediate/dhcp
 	plugins/intermediate/geoip
 	plugins/intermediate/profiler
@@ -29,3 +28,4 @@ AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
 
 # plugins/storage/unirec is not added to SUBDIRS due to its dependency on libtrap
+# plugins/input/udp_cpg is not added to SUBDIRS due to its dependency on libcpg

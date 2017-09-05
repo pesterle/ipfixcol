@@ -1,23 +1,48 @@
+/**
+ * \file Kafka.h
+ *
+ */
+
 #ifndef KAFKA_H
 #define KAFKA_H
 
 #include "json.h"
-#include <librdkafka/rdkafka.h>
 
-class Kafka : public Output
-{
+#include <string>
+#include <ctime>
+#include <cstdio>
+#include <map>
+
+#include <pthread.h>
+
+#include "librdkafka/src-cpp/rdkafkacpp.h"
+
+
+/**
+ * \brief The class for file output interface
+ */
+class Kafka : public Output {
 public:
-    Kafka(const pugi::xpath_node &config);
+	// Constructor & destructor
+	Kafka(const pugi::xpath_node &config);
+	~Kafka();
 
-    ~Kafka();
-    void ProcessDataRecord(const std::string& record);
+	// Store a record to the file
+	void ProcessDataRecord(const std::string &record);
 
 private:
-    std::string _topic;
-    int _partitions = 1;
-    int _current_partition = 0;
-    rd_kafka_t *_rk; /* Producer instance handle */
-    rd_kafka_topic_t *_rkt; /* Topic object */
+
+	std::string topic;
+	std::map<std::string, RdKafka::Topic *> topics;
+	RdKafka::Topic * CreateTopic(std::string);
+	RdKafka::Topic * GetTopic(std::string);
+	RdKafka::Producer * producer;
+
+	RdKafka::Conf * gconf;
+	RdKafka::Conf * tconf;
+
+	int qcount;
 };
 
 #endif // KAFKA_H
+

@@ -1,6 +1,6 @@
 ACLOCAL_AMFLAGS = -I m4
 
-SUBDIRS = pugixml
+SUBDIRS = pugixml librdkafka
 AM_CPPFLAGS += -I$(top_srcdir)/pugixml $(SISO_CPPFLAGS)
 #-I$(top_srcdir)/../../../base/src/utils/libsiso/
 AM_LDFLAGS += $(SISO_LDFLAGS) $(KAFKA_LDFLAGS) -module -avoid-version -shared
@@ -22,14 +22,10 @@ ipfixcol_json_output_la_SOURCES = \
 	Printer.cpp Printer.h \
 	Server.cpp Server.h \
 	File.cpp File.h \
+	Kafka.cpp Kafka.h \
 	branchslut2.h
 
-if NEED_KAFKA
-ipfixcol_json_output_la_SOURCES += Kafka.cpp Kafka.h
-AM_CPPFLAGS += -DHAVE_KAFKA
-endif
-
-ipfixcol_json_output_la_LIBADD = pugixml/libpugixml.la
+ipfixcol_json_output_la_LIBADD = pugixml/libpugixml.la -Llibrdkafka/src-cpp/ -lrdkafka++
 
 BUILT_SOURCES = protocols.cpp
 CLEANFILES = protocols.cpp

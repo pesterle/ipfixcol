@@ -1,128 +1,169 @@
-#include "Kafka.h"
+/**
+ * \file Kafka.cpp
+ * \author Lukas Hutak <xhutak01@stud.fit.vutbr.cz>
+ * \brief Kafka output (source file)
+ *
+ * Copyright (C) 2015 CESNET, z.s.p.o.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *	notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *	notice, this list of conditions and the following disclaimer in
+ *	the documentation and/or other materials provided with the
+ *	distribution.
+ * 3. Neither the name of the Company nor the names of its contributors
+ *	may be used to endorse or promote products derived from this
+ *	software without specific prior written permission.
+ *
+ * ALTERNATIVELY, provided that this notice is retained in full, this
+ * product may be distributed under the terms of the GNU General Public
+ * License (GPL) version 2 or later, in which case the provisions
+ * of the GPL apply INSTEAD OF those given above.
+ *
+ * This software is provided ``as is, and any express or implied
+ * warranties, including, but not limited to, the implied warranties of
+ * merchantability and fitness for a particular purpose are disclaimed.
+ * In no event shall the company or contributors be liable for any
+ * direct, indirect, incidental, special, exemplary, or consequential
+ * damages (including, but not limited to, procurement of substitute
+ * goods or services; loss of use, data, or profits; or business
+ * interruption) however caused and on any theory of liability, whether
+ * in contract, strict liability, or tort (including negligence or
+ * otherwise) arising in any way out of the use of this software, even
+ * if advised of the possibility of such damage.
+ *
+ */
 
+#include "Kafka.h"
 #include <stdexcept>
-#include <sys/time.h>
+#include <string>
+#include <vector>
+
+#include <cstring>
+#include <cerrno>
+#include <cstdio>
+#include <sstream>
+#include <iostream>
+
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
-static const char *msg_module = "json kafka";
 
-static void msg_delivered (rd_kafka_t *rk, void *payload, size_t len, 
-        rd_kafka_resp_err_t err, void *opaque, void *msg_opaque)
-{
-    if (err) {
-        MSG_ERROR(msg_module, "Message delivery failed: %s",
-            rd_kafka_err2str(err));
-    }
-}
+#define DEF_WINDOW_SIZE (300)
+#define DEF_WINDOW_ALIGN (true)
 
+static const char *msg_module = "json_storage(kafka)";
+
+/**
+ * \brief Class constructor
+ *
+ * Parse output configuration and create an output file
+ * \param config[in] XML configuration
+ */
 Kafka::Kafka(const pugi::xpath_node &config)
 {
-    rd_kafka_conf_t *conf; /* Temporary configuration object */
-    char errstr[512];
+	std::string errstr;
 
-    std::string ip    = config.node().child_value("ip");
-    std::string port  = config.node().child_value("port");
-    std::string partitions_str = config.node().child_value("partitions");
-    _topic = config.node().child_value("topic");
+	MSG_INFO(msg_module, "initializing");
 
-    /* Check IP address */
-    if (ip.empty()) {
-        throw std::invalid_argument("IP address not set");
-    }
+	gconf = RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL);
+	tconf = RdKafka::Conf::create(RdKafka::Conf::CONF_TOPIC);
+	
+	for ( pugi::xml_node prop = config.node().first_child(); prop; prop = prop.next_sibling() )
+	{
+		std::string name = prop.name();
+		if ( name.compare("Topics") == 0 )
+		{
+			topic = config.node().child_value(prop.name()); 
+			MSG_INFO(msg_module, "%s = %s", name.c_str(), topic.c_str());
+		}
+		else if ( name.compare("type") == 0 )
+		{
+			// ignore this
+		}
+		else
+		{
+			std::string value = config.node().child_value(name.c_str());
+			MSG_INFO(msg_module, "%s = %s", name.c_str(), value.c_str());
+			if ( gconf->set(name, value, errstr) != RdKafka::Conf::CONF_OK )
+				MSG_INFO(msg_module, "errstr = %s", errstr.c_str());
+		}
+	}
 
-    /* Check port number */
-    if (port.empty()) {
-        throw std::invalid_argument("Port number not set");
-    }
+	std::list<std::string> * conf = gconf->dump();
+	for ( std::list<std::string>::iterator i = conf->begin(); i != conf->end(); i++ )
+	{
+		std::string s = *i;
+		MSG_INFO(msg_module, "%s", s.c_str());
+	}
+	
+	producer = RdKafka::Producer::create(gconf, errstr);	
+	qcount = 0;
 
-    /* Check topic */
-    if (_topic.empty()) {
-        throw std::invalid_argument("Topic not set");
-    }
-
-    /* Check partition */
-    if (partitions_str.empty()) {
-        throw std::invalid_argument("Number of partitions not set");
-    } else {
-        _partitions = atoi(partitions_str.c_str()); // TODO fixme
-    }
-
-    // create kafka configuration
-    conf = rd_kafka_conf_new();
-
-    // set delivery callback
-    rd_kafka_conf_set_dr_cb(conf, msg_delivered);
-
-    // create new producer
-    _rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf, errstr, sizeof(errstr));
-    if (!_rk) {
-        throw std::runtime_error(
-            std::string("Failed to create new producer: ") + errstr);
-    }
-
-    // set brokers
-    if (rd_kafka_brokers_add(_rk, (ip + ":" + port).c_str()) == 0) {
-        throw std::runtime_error("No valid brokers specified");
-    }
-
-    // create new topic
-    _rkt = rd_kafka_topic_new(_rk, _topic.c_str(), NULL);
-    if (!_rkt) {
-        rd_kafka_destroy(_rk);
-        throw std::runtime_error(std::string("Failed to create topic: ") 
-            + rd_kafka_err2str(rd_kafka_errno2err(errno)));
-    }
-
+	MSG_INFO(msg_module, "initialized");
 }
 
+/**
+ * \brief Class destructor
+ *
+ * Close all opened files
+ */
 Kafka::~Kafka()
 {
-    MSG_INFO(msg_module, "Waiting for Kafka output to finish sending");
-    while (rd_kafka_outq_len(_rk) > 0) {
-        rd_kafka_poll(_rk, 100);
-    }
 
-    // destroy topic
-    rd_kafka_topic_destroy(_rkt);
-    // destroy the producer
-    rd_kafka_destroy(_rk);
-
-    MSG_INFO(msg_module, "Kafka plugin finished");
 }
 
+
+/**
+ * \brief Store a record to a file
+ * \param[in] record JSON record
+ */
 void Kafka::ProcessDataRecord(const std::string &record)
 {
-    while (rd_kafka_produce(_rkt, _current_partition++ % _partitions,
-        RD_KAFKA_MSG_F_COPY, (void *) record.c_str(), record.length(),
-        NULL, 0, NULL) != 0) {
+	// Store the record
+	//
+	std::stringstream sbuf;
+	sbuf << record;
 
-        switch (errno) {
-        case ENOBUFS:
-            MSG_WARNING(msg_module, "maximum number of outstanding messages"
-                " (%u) has been reached: 'queue.buffering.max.messages'",
-                rd_kafka_outq_len(_rk));
-
-            // wait a while for the queue to be processed
-            usleep(200000);
-            rd_kafka_poll(_rk, 0);
-            break;
-        case EMSGSIZE:
-            MSG_ERROR(msg_module, "Message is larged than configured max size:"
-                " 'messages.max.bytes'");
-            return;
-        case ESRCH: 
-            throw std::runtime_error("Requested 'partition' is unknown in the "
-                "Kafka cluster.");
-            break;
-        case ENOENT:
-            throw std::runtime_error("Topic is unknown in the Kafka cluster.");
-            break;
-        default:
-            MSG_ERROR(msg_module, "Unknown error while producing a message to "
-                "Kafka");
-            break;
-        }
-    }
-
-    rd_kafka_poll(_rk, 0);
+	RdKafka::ErrorCode resp = producer->produce(GetTopic(topic), RdKafka::Topic::PARTITION_UA, RdKafka::Producer::RK_MSG_COPY, (void*)(sbuf.str().data()), sbuf.str().size(), NULL, NULL);
+	if ( resp != RdKafka::ERR_NO_ERROR)
+	{
+		MSG_ERROR(msg_module, "Failed to push record to Kafka %s", RdKafka::err2str(resp).c_str());
+	}
+	else
+	{
+		//MSG_INFO(msg_module, "Record pushed to Kafka");
+		qcount++;
+		if (qcount > 1000 )
+		{
+			producer->flush(30000);
+			qcount = 0;
+		}
+	}
 }
+
+RdKafka::Topic * Kafka::CreateTopic(std::string)
+{
+	std::string errstr;
+	
+	RdKafka::Topic *t = RdKafka::Topic::create(producer, topic, tconf, errstr);
+	topics.insert(std::pair<std::string, RdKafka::Topic*>(topic, t));
+	return t;
+}
+
+RdKafka::Topic * Kafka::GetTopic(std::string)
+{
+	std::map<std::string, RdKafka::Topic *>::iterator i = topics.find(topic);
+	if ( i != topics.end() )
+	{   
+		RdKafka::Topic * t = i->second;
+		return t;
+	}   
+	else
+		return CreateTopic(topic);
+}
+
