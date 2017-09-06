@@ -15,7 +15,7 @@
 
 #include <pthread.h>
 
-#include "librdkafka/src-cpp/rdkafkacpp.h"
+#include <librdkafka/rdkafkacpp.h>
 
 
 /**
